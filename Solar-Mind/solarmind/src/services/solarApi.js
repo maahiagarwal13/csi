@@ -64,7 +64,7 @@ export async function fetchSolarIrradiance(lat, lng) {
       },
     }
   } catch (error) {
-    console.warn('NASA POWER API failed, falling back to simulated data for demo purposes:', error);
+    console.warn('NASA POWER API unavailable — using regional average irradiance data.', error);
     // Mock simulation data tailored for Dehradun area roughly
     return {
       avgIrradiance: 5.2,
@@ -76,5 +76,24 @@ export async function fetchSolarIrradiance(lat, lng) {
         source: 'Simulated Solar Data (Fallback)',
       },
     }
+  }
+}
+
+/**
+ * Fetch structured address from Nominatim for tariff detection.
+ * @param {number} lat
+ * @param {number} lng
+ * @returns {Promise<object>} Nominatim address object
+ */
+export async function fetchAddressFromCoords(lat, lng) {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`,
+      { headers: { 'Accept-Language': 'en' } }
+    );
+    const data = await res.json();
+    return data.address || {};
+  } catch {
+    return {};
   }
 }

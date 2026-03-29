@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
-import { fetchSolarIrradiance } from '../services/solarApi'
+import { fetchSolarIrradiance, fetchAddressFromCoords } from '../services/solarApi'
 import { runFullPipeline } from '../services/solarCalculations'
+import { TARIFF_DB, detectStateFromAddress, calculateSlabBill } from '../data/electricityTariffs'
 
 /**
  * Orchestrates the full Phase 2→5 pipeline.
@@ -31,15 +32,34 @@ export function useSolarPipeline() {
       // Phase 2 — Fetch solar irradiance from NASA POWER API
       const solarData = await fetchSolarIrradiance(location.lat, location.lng)
 
-      setLoadingStep(2) // Running calculations
+      setLoadingStep(2) // Detecting local electricity tariff
 
-      // Phases 3–5 — Run full calculation pipeline
-      const pipelineResults = runFullPipeline({ monthlyKwh, roofAreaSqFt }, solarData)
+      // Detect state and tariff from location
+      const addressObj = await fetchAddressFromCoords(location.lat, location.lng)
+      const stateKey = detectStateFromAddress(addressObj)
+      const tariff = TARIFF_DB[stateKey] || TARIFF_DB.default
+      const { totalBill, effectiveRate, breakdown } = calculateSlabBill(monthlyKwh, tariff)
 
-      setLoadingStep(3) // Done
+      setLoadingStep(3) // Running calculations
+
+      // Phases 3–5 — Run full calculation pipeline with location-aware rate
+      const pipelineResults = runFullPipeline(
+        { monthlyKwh, roofAreaSqFt },
+        solarData,
+        { electricityRate: effectiveRate }
+      )
+
+      setLoadingStep(4) // Done
 
       setResults({
         ...pipelineResults,
+        tariff: {
+          ...tariff,
+          stateKey,
+          effectiveRate,
+          currentMonthlyBill: totalBill,
+          slabBreakdown: breakdown,
+        },
         inputData: phase1Data,
       })
       setStatus('success')

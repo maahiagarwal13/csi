@@ -316,7 +316,7 @@
     padding: 10vh 0 10vh 10vw;
 }
 .solariq-theme .step-item {
-    min-height: 80vh;
+    min-height: 60vh;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -376,7 +376,7 @@
     padding: 10vh 0 10vh 10vw;
 }
 .solariq-theme .step-item {
-    min-height: 80vh;
+    min-height: 60vh;
     display: flex;
     flex-direction: column;
     justify-content: center;
@@ -399,6 +399,16 @@
     line-height: 1.6;
     max-width: 450px;
     opacity: 0.8;
+}
+.solariq-theme .step-detail {
+    font-size: 0.85rem;
+    color: var(--amber);
+    opacity: 0.65;
+    margin-top: 1.25rem;
+    font-weight: 500;
+    letter-spacing: 0.3px;
+    border-left: 2px solid var(--amber);
+    padding-left: 0.75rem;
 }
 
 /* ---------- SCREEN 3: UPLOAD FLOW ---------- */
@@ -997,6 +1007,14 @@
 .env-val { font-size: 2rem; font-weight: 700; margin-bottom: 0.25rem; letter-spacing:-1px;}
 .env-label { font-size: 0.9rem; color: #777; margin-bottom: 0.5rem; font-weight: 600; text-transform: uppercase;}
 .env-sub { font-size: 0.95rem; font-weight: 600; color: #333; }
+.env-context {
+    font-size: 0.78rem;
+    color: inherit;
+    opacity: 0.45;
+    margin-top: 0.4rem;
+    font-style: italic;
+    line-height: 1.4;
+}
 
 .comparison-section { margin-bottom: 2.5rem; }
 .comp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }

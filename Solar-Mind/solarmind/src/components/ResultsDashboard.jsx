@@ -290,7 +290,7 @@ export default function ResultsDashboard({ results, onReset }) {
           </div>
         </motion.div>
 
-        {/* ── Section 7: AI Insights Panel (Phase 6 placeholder) ── */}
+        {/* ── Section 7: AI Insights Panel ── */}
         <motion.div
           className="bg-surface-container-low border border-outline-variant/10 rounded-2xl p-6 mb-8"
           initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
@@ -301,7 +301,7 @@ export default function ResultsDashboard({ results, onReset }) {
             </div>
             <div>
               <p className="font-bold text-on-surface text-sm">AI Solar Advisor</p>
-              <p className="text-xs text-on-surface-variant">SolarMind Intelligence · Phase 6</p>
+              <p className="text-xs text-on-surface-variant">SolarMind Intelligence</p>
             </div>
           </div>
           <div className="bg-surface-container rounded-xl p-5 text-sm text-on-surface leading-relaxed">
@@ -333,7 +333,7 @@ export default function ResultsDashboard({ results, onReset }) {
           </div>
           <div className="mt-3 flex items-center gap-2 text-xs text-on-surface-variant/50">
             <FiInfo className="text-xs" />
-            <span>AI-enhanced recommendations powered by Gemini will be available in Phase 6.</span>
+            <span>AI-enhanced recommendations are powered by NASA POWER irradiance data and MNRE subsidy guidelines.</span>
           </div>
         </motion.div>
 

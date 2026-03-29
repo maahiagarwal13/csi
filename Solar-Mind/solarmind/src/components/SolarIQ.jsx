@@ -1,18 +1,28 @@
 import React, { useEffect, useRef, useState } from 'react';
 import './SolarIQ.css';
 import { useSolarPipeline } from '../hooks/useSolarPipeline';
+import BillUpload from './BillUpload';
 
 export default function SolarIQ() {
   const { status, results, error, run, reset } = useSolarPipeline();
-  const [uploadState, setUploadState] = useState('idle'); // idle, scanning, data, ready, complete
   const [pinState, setPinState] = useState('waiting'); // waiting, pinned
   const [coords, setCoords] = useState(null);
-  const [simulatedData, setSimulatedData] = useState(null);
   const [activeStep, setActiveStep] = useState('01');
   const [theme, setTheme] = useState('dark');
   const [activeTab, setActiveTab] = useState('upload'); // 'upload' or 'manual'
   const [manualKwh, setManualKwh] = useState(350);
   const [manualRoofArea, setManualRoofArea] = useState('');
+  const [pdfLoading, setPdfLoading] = useState(false);
+
+  // BillUpload form data state
+  const [formData, setFormData] = useState({
+    monthlyKwh: '',
+    billingPeriod: 'monthly',
+    inputMethod: 'manual',
+  });
+  const updateFormData = (updates) => {
+    setFormData((prev) => ({ ...prev, ...updates }));
+  };
 
   // Search logic states
   const [searchQuery, setSearchQuery] = useState('');
@@ -97,16 +107,32 @@ export default function SolarIQ() {
   // Set up Map
   useEffect(() => {
     if (window.L && mapRef.current && !leafletMap.current) {
-      leafletMap.current = window.L.map(mapRef.current, { zoomControl: false }).setView([30.3165, 78.0322], 12);
-      window.L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution: '© OS contributors'
-      }).addTo(leafletMap.current);
+      leafletMap.current = window.L.map(mapRef.current, { zoomControl: false }).setView([30.3165, 78.0322], 15);
+
+      // Start with satellite: Google Satellite (full India coverage) + Esri labels
+      window.L.tileLayer(
+        'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+        { attribution: '© Google', maxZoom: 20 }
+      ).addTo(leafletMap.current);
+      window.L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        { attribution: '', maxZoom: 19, opacity: 0.8 }
+      ).addTo(leafletMap.current);
+
+      // Helper: remove only marker layers, not tile layers
+      const clearMarkers = (map) => {
+        map.eachLayer(layer => {
+          if (layer instanceof window.L.Marker) map.removeLayer(layer);
+        });
+      };
 
       leafletMap.current.on('click', function(e) {
-        leafletMap.current.eachLayer(layer => { if (layer instanceof window.L.Marker) leafletMap.current.removeLayer(layer); });
+        clearMarkers(leafletMap.current);
         window.L.marker(e.latlng).addTo(leafletMap.current);
         setCoords({ lat: e.latlng.lat, lng: e.latlng.lng });
         setPinState('pinned');
+        // Clamp zoom to avoid missing tiles
+        leafletMap.current.setView([e.latlng.lat, e.latlng.lng], Math.min(leafletMap.current.getZoom(), 16));
       });
     }
 
@@ -116,7 +142,7 @@ export default function SolarIQ() {
         leafletMap.current = null;
       }
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSearch = async (e) => {
     e.preventDefault();
@@ -143,69 +169,33 @@ export default function SolarIQ() {
     setSearchQuery(item.display_name.split(',')[0]); // Use short name for display
 
     if (leafletMap.current) {
-      leafletMap.current.setView([lat, lng], 14);
+      leafletMap.current.setView([lat, lng], 15);
       leafletMap.current.eachLayer(layer => { if (layer instanceof window.L.Marker) leafletMap.current.removeLayer(layer); });
       window.L.marker([lat, lng]).addTo(leafletMap.current);
     }
   };
 
-  const handleDrop = () => {
-    setUploadState('scanning');
-    
-    const pBar = document.getElementById('progressBarFill');
-    const sStatus = document.getElementById('scanStatus');
-    
-    setTimeout(() => { if(pBar) pBar.style.width = '30%'; if(sStatus) sStatus.innerText = 'Extracting load requirements...'; }, 100);
-    setTimeout(() => { if(pBar) pBar.style.width = '70%'; if(sStatus) sStatus.innerText = 'Identifying DISCOM tariffs...'; }, 300);
-    setTimeout(() => { if(pBar) pBar.style.width = '100%'; if(sStatus) sStatus.innerText = 'Finalizing...'; }, 500);
-    
-    setTimeout(() => {
-      setUploadState('data');
-      setSimulatedData({ monthlyKwh: 350, sanctionedLoad: 4, provider: 'UPCL DISCOM', period: 'Last 12 Months' });
-      
-      const sData = document.getElementById('scannedData');
-      if (sData) sData.style.display = 'block';
-      const rows = sData?.querySelectorAll('.scanned-row') || [];
-      rows.forEach((r, i) => {
-        setTimeout(() => {
-          r.style.opacity = '1';
-          r.style.transform = 'translateY(0)';
-        }, i * 50 + 50);
-      });
-      
-      setTimeout(() => {
-        setUploadState('ready');
-      }, rows.length * 50 + 100);
-    }, 600);
+  const getEffectiveKwh = () => {
+    if (activeTab === 'manual') return parseInt(manualKwh, 10) || 0;
+    return parseInt(formData.monthlyKwh, 10) || 0;
   };
 
   const handleGenerate = (e) => {
     e.preventDefault();
-    if (activeTab === 'manual') {
-      if (manualKwh && pinState === 'pinned') {
-        run({
-          monthlyKwh: parseInt(manualKwh, 10),
-          location: coords,
-          roofAreaSqFt: parseInt(manualRoofArea, 10) || 800
-        });
-        document.getElementById('dashboard')?.scrollIntoView({ behavior: 'smooth' });
-      }
-    } else {
-      if (uploadState === 'ready' && pinState === 'pinned') {
-        run({
-          monthlyKwh: simulatedData.monthlyKwh,
-          location: coords,
-          roofAreaSqFt: 800 // default mock space for demo
-        });
-        document.getElementById('dashboard')?.scrollIntoView({ behavior: 'smooth' });
-      }
+    const kwh = getEffectiveKwh();
+    if (kwh > 0 && pinState === 'pinned') {
+      run({
+        monthlyKwh: kwh,
+        location: coords,
+        roofAreaSqFt: parseInt(manualRoofArea, 10) || 800
+      });
+      document.getElementById('dashboard')?.scrollIntoView({ behavior: 'smooth' });
     }
   };
 
   // Dashboard reveal and charts
   useEffect(() => {
     if (status === 'success' && results) {
-      setUploadState('complete');
       setTimeout(() => {
         renderCharts(results);
       }, 100);
@@ -262,7 +252,7 @@ export default function SolarIQ() {
     }
 
     const yearlySavings = res.financials.yearlyData.map(d => d.cumulativeSavings);
-    const yearlyCosts = res.financials.yearlyData.map(() => res.financials.installCost);
+    const yearlyCosts = res.financials.yearlyData.map(d => d.cumulativeCost);
     const years = res.financials.yearlyData.map(d => d.year);
 
     if (lineChartRef.current) {
@@ -292,27 +282,91 @@ export default function SolarIQ() {
     }
   };
 
-  const handleDownloadPDF = (e) => {
+  const handleDownloadPDF = async (e) => {
     e.preventDefault();
     if (!window.html2pdf) {
-      alert("PDF generating library is not loaded yet.");
+      alert('PDF library not loaded yet. Please wait a moment and try again.');
       return;
     }
-    
-    const element = document.getElementById('dashboard');
-    const OriginalOverflow = element.style.overflow;
-    
+
+    const source = document.getElementById('dashboard');
+    if (!source) return;
+
+    // Direct DOM manipulation for loading feedback (React can't repaint while html2canvas blocks the thread)
+    const btn = e.currentTarget;
+    if (btn.dataset.busy === 'true') return;
+    btn.dataset.busy = 'true';
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<span style="width:1.2rem;height:1.2rem;border:2px solid #333;border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;display:inline-block"></span> Generating PDF...';
+    btn.style.background = '#999';
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = '0.7';
+
+    // Yield TWO frames to guarantee the browser paints the loading state
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(r, 50))));
+
+    // Force Chart.js instances to re-draw their canvas pixels before capture
+    if (barChartRef.current?.chartInstance) barChartRef.current.chartInstance.update();
+    if (lineChartRef.current?.chartInstance) lineChartRef.current.chartInstance.update();
+
+    // Clone the node so we can safely mutate styles without affecting the live UI
+    const clone = source.cloneNode(true);
+    clone.style.position = 'relative';
+    clone.style.overflow = 'visible';
+    clone.style.width = '1100px';
+    clone.style.background = '#FCFBF8';
+    clone.style.color = '#2c2c2c';
+    clone.style.padding = '40px';
+    clone.style.fontFamily = 'Inter, sans-serif';
+
+    // Remove the download button from the clone so it doesn't appear in the PDF
+    const btnInClone = clone.querySelector('[data-pdf-hide]');
+    if (btnInClone) btnInClone.remove();
+
+    // Copy the live canvas pixel content into the cloned canvas elements
+    const liveCanvases = source.querySelectorAll('canvas');
+    const cloneCanvases = clone.querySelectorAll('canvas');
+    liveCanvases.forEach((liveCanvas, i) => {
+      const cloneCanvas = cloneCanvases[i];
+      if (cloneCanvas) {
+        cloneCanvas.width = liveCanvas.width;
+        cloneCanvas.height = liveCanvas.height;
+        cloneCanvas.getContext('2d').drawImage(liveCanvas, 0, 0);
+      }
+    });
+
+    // Attach the clone off-screen so html2canvas can measure it
+    clone.style.position = 'absolute';
+    clone.style.top = '-9999px';
+    clone.style.left = '-9999px';
+    document.body.appendChild(clone);
+
     const opt = {
-      margin:       0.2,
-      filename:     'SolarMind_Engineering_Blueprint.pdf',
-      image:        { type: 'jpeg', quality: 0.98 },
-      html2canvas:  { scale: 2, useCORS: true, letterRendering: true, windowWidth: 1200 },
-      jsPDF:        { unit: 'in', format: 'a4', orientation: 'portrait' }
+      margin: [10, 10, 10, 10],
+      filename: 'SolarMind_Solar_Report.pdf',
+      image: { type: 'jpeg', quality: 0.97 },
+      html2canvas: {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#FCFBF8',
+        logging: false,
+        windowWidth: 1100,
+      },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
     };
 
-    window.html2pdf().set(opt).from(element).save().then(() => {
-        if(element) element.style.overflow = OriginalOverflow;
-    });
+    try {
+      await window.html2pdf().set(opt).from(clone).save();
+    } finally {
+      document.body.removeChild(clone);
+      btn.innerHTML = originalText;
+      btn.style.background = 'var(--amber)';
+      btn.style.pointerEvents = 'auto';
+      btn.style.opacity = '1';
+      btn.dataset.busy = 'false';
+    }
   };
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
@@ -325,7 +379,7 @@ export default function SolarIQ() {
           <div className="logo">Solar<strong>Mind</strong></div>
           <div style={{display: 'flex', gap: '1.5rem', alignItems: 'center'}}>
               <a href="#how" style={{color: 'inherit', textDecoration: 'none', fontSize: '0.9rem', textTransform: 'uppercase'}}>How It Works</a>
-              <a href="#demo" style={{color: 'inherit', textDecoration: 'none', fontSize: '0.9rem', textTransform: 'uppercase'}}>Demo</a>
+              <a href="#analyze" style={{color: 'inherit', textDecoration: 'none', fontSize: '0.9rem', textTransform: 'uppercase'}}>Analyze</a>
               <button onClick={toggleTheme} className="btn-icon" style={{background: 'none', border:'none', cursor:'pointer', color:'inherit', display:'flex', alignItems:'center'}}>
                 {theme === 'dark' ? (
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
@@ -333,7 +387,7 @@ export default function SolarIQ() {
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
                 )}
               </button>
-              <a href="#dashboard" className="btn btn-outline" style={{padding: '0.6rem 1.2rem', fontSize: '0.8rem'}}>Impact &rarr;</a>
+              <a href="#analyze" className="btn btn-outline" style={{padding: '0.6rem 1.2rem', fontSize: '0.8rem'}}>Get Started &rarr;</a>
           </div>
       </nav>
 
@@ -341,10 +395,17 @@ export default function SolarIQ() {
       <section className="hero" id="hero">
           <div className="hero-text" style={{maxWidth: '800px', margin: '0 auto', textAlign: 'center'}}>
               <h1 className="serif hero-title-anim" style={{marginBottom: '1.5rem'}}>
-                Solar clarity <br/> for every Indian homeowner.
+                Know your roof's solar potential. <br/> In under a minute.
               </h1>
-              <p className="subline" style={{marginBottom: '2.5rem'}}>AI-powered feasibility analysis for Indian homeowners based on actual DISCOM data. Precision engineering without the visual noise.</p>
-              <div className="hero-cta"><a href="#demo" className="btn btn-filled">Analyze My Home &rarr;</a></div>
+              <p className="subline" style={{marginBottom: '2.5rem'}}>Upload your electricity bill. Drop a pin. SolarMind runs the numbers — real NASA irradiance data, MNRE subsidy logic, and a 25-year ROI model — so you don't have to guess.</p>
+              <div className="hero-cta"><a href="#analyze" className="btn btn-filled">Analyze My Home &rarr;</a></div>
+              <div style={{opacity: 0, animation: 'sublineReveal 1s 2.5s forwards', fontSize: '0.8rem', letterSpacing: '1.5px', marginTop: '2.5rem', textTransform: 'uppercase', display: 'flex', justifyContent: 'center', gap: '2rem', flexWrap: 'wrap'}}>
+                <span>☀️ NASA POWER Data</span>
+                <span>·</span>
+                <span>🏛️ MNRE Subsidy Logic</span>
+                <span>·</span>
+                <span>📊 25-Year ROI Model</span>
+              </div>
           </div>
 
           <div className="scroll-indicator">
@@ -362,37 +423,43 @@ export default function SolarIQ() {
           <div className="process-right">
               <div className="step-item active step-trigger" data-step="01">
                   <h3>Upload Bill</h3>
-                  <p>Drop your recent electricity bill. Our AI instantly securely reads your consumption data.</p>
+                  <p>Drop your recent electricity bill PDF or image. Our OCR engine reads your monthly kWh consumption, sanctioned load, and billing period — no manual entry needed.</p>
+                  <div className="step-detail">Supports UPCL, TPDDL, MSEDCL, BESCOM and most Indian DISCOM bill formats</div>
               </div>
               <div className="step-item step-trigger" data-step="02">
                   <h3>OCR Extraction</h3>
-                  <p>We extract your sanctioned load, monthly units, tariff rates, and DISCOM provider silently in seconds.</p>
+                  <p>Powered by Tesseract.js, we extract four key fields: monthly units consumed, sanctioned load in kW, applicable tariff slab, and your DISCOM provider — all in under 3 seconds.</p>
+                  <div className="step-detail">No data is stored or transmitted. All processing happens in your browser.</div>
               </div>
               <div className="step-item step-trigger" data-step="03">
                   <h3>Pin Location</h3>
-                  <p>Drop a pin on your roof. We analyze local solar irradiance and weather patterns.</p>
+                  <p>Drop a pin anywhere on the map — your rooftop, your neighbourhood, your city. We query NASA's POWER Climatology API to retrieve 22 years of solar irradiance averages for that exact coordinate.</p>
+                  <div className="step-detail">Solar irradiance varies by up to 35% across India — location precision directly affects accuracy</div>
               </div>
               <div className="step-item step-trigger" data-step="04">
                   <h3>AI Analysis</h3>
-                  <p>Cross-referencing your consumption with your geometry to calculate the optimal panel layout.</p>
+                  <p>Your monthly consumption pattern is cross-referenced against the irradiance profile for your location. We account for panel performance ratio, inverter losses, and seasonal generation variation month by month.</p>
+                  <div className="step-detail">Uses a 0.78 performance ratio and NASA ALLSKY_SFC_SW_DWN parameter for each month</div>
               </div>
               <div className="step-item step-trigger" data-step="05">
                   <h3>System Sizing</h3>
-                  <p>Generating the precise kW requirement to offset your bills and maximize ROI.</p>
+                  <p>The engine outputs your optimal system capacity in kW, the exact number of 400W panels needed, the roof space required, and your monthly energy coverage percentage — constrained by your available area.</p>
+                  <div className="step-detail">Output: system kW · panel count · roof sq ft · % coverage · daily/monthly/annual generation</div>
               </div>
               <div className="step-item step-trigger" data-step="06">
                   <h3>Your Report</h3>
-                  <p>Receive a comprehensive, beautifully detailed blueprint for your solar transition.</p>
+                  <p>A complete solar blueprint: 25-year savings projection with panel degradation, MNRE 40% subsidy applied, payback period, CO₂ offset, and an AI-written plain-language recommendation. Downloadable as a PDF.</p>
+                  <div className="step-detail">Includes PM Surya Ghar subsidy guidance and DISCOM net metering next steps</div>
               </div>
           </div>
       </section>
 
-      {/* SCREEN 3: DEMO */}
-      <section className="upload-section" id="demo">
+      {/* SCREEN 3: ANALYZE */}
+      <section className="upload-section" id="analyze">
           <div className="upload-title reveal">
-              <span className="process-tag" style={{color:'var(--green)', letterSpacing: '3px', fontWeight:600}}>LIVE DEMO</span>
+              <span className="process-tag" style={{color:'var(--green)', letterSpacing: '3px', fontWeight:600}}>GET STARTED</span>
               <h2 className="serif" style={{fontSize: '4rem', marginTop: '1rem', marginBottom: '0.5rem'}}>Generate Your Analysis</h2>
-              <p style={{opacity: 0.6, fontSize: '1.1rem'}}>Try the simulator using context for Dehradun, Uttarakhand.</p>
+              <p style={{opacity: 0.6, fontSize: '1.1rem'}}>Enter your electricity consumption and location to get started.</p>
           </div>
 
           <div className="interactive-card reveal">
@@ -404,38 +471,9 @@ export default function SolarIQ() {
               <div className="interactive-main">
                   <div className="upload-zone">
                       {activeTab === 'upload' ? (
-                          <>
-                              {uploadState === 'idle' && (
-                                <div className="drop-area" id="dropArea" onClick={handleDrop}>
-                                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{marginBottom:'1rem', opacity:0.5}}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
-                                    <h3 style={{fontSize: '1.5rem', marginBottom: '0.5rem'}} className="serif">Drop Electricity Bill</h3>
-                                    <p style={{fontSize: '0.9rem', opacity: 0.6}}>Click anywhere in this zone to simulate upload</p>
-                                </div>
-                              )}
-                              
-                              {uploadState === 'scanning' && (
-                                <div className="scan-loader" id="scanLoader" style={{display:'block'}}>
-                                    <h4 style={{color:'var(--amber)'}} className="serif">Scanning Document...</h4>
-                                    <div className="progress-bar-container">
-                                        <div className="progress-bar" id="progressBarFill"></div>
-                                    </div>
-                                    <p style={{fontSize: '0.8rem', opacity: 0.5}} id="scanStatus">Reading text contents...</p>
-                                </div>
-                              )}
-
-                              {(uploadState === 'data' || uploadState === 'ready' || uploadState === 'complete') && (
-                                <div className="scanned-data" id="scannedData">
-                                    <div className="scanned-row"><span>Monthly Units</span> <strong>350 kWh</strong></div>
-                                    <div className="scanned-row"><span>Sanctioned Load</span> <strong>4 kW</strong></div>
-                                    <div className="scanned-row"><span>Provider</span> <strong>UPCL DISCOM</strong></div>
-                                    <div className="scanned-row"><span>Bill Period</span> <strong>Last 12 Months</strong></div>
-                                    <div style={{marginTop: '1.5rem', color: 'var(--green)', display: 'flex', alignItems: 'center', gap:'0.5rem', justifyContent: 'center', fontSize:'0.9rem'}}>
-                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
-                                        Extraction Complete
-                                    </div>
-                                </div>
-                              )}
-                          </>
+                          <div style={{padding: '1.5rem', textAlign: 'left', color: theme === 'light' ? 'var(--text-on-light)' : 'var(--text-on-dark)'}}>
+                              <BillUpload formData={formData} updateFormData={updateFormData} hideControls />
+                          </div>
                       ) : (
                           <div className="manual-entry-form" style={{padding: '1.5rem', textAlign: 'left', color: theme === 'light' ? 'var(--text-on-light)' : 'var(--text-on-dark)'}}>
                               <div className="form-group" style={{marginBottom: '1.5rem'}}>
@@ -476,7 +514,51 @@ export default function SolarIQ() {
                               </ul>
                           )}
                       </div>
-                      <div id="map" ref={mapRef}></div>
+                      <div id="map" ref={mapRef} style={{position: 'relative'}}>
+                        <button
+                          id="mapToggleBtn"
+                          onClick={() => {
+                            const map = leafletMap.current;
+                            if (!map) return;
+                            const btn = document.getElementById('mapToggleBtn');
+                            const isSatellite = btn.getAttribute('data-mode') === 'satellite';
+                            if (isSatellite) {
+                              map.eachLayer(l => { if (!(l instanceof window.L.Marker)) map.removeLayer(l); });
+                              window.L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap contributors © CARTO', maxZoom: 19 }).addTo(map);
+                              btn.setAttribute('data-mode', 'street');
+                              btn.innerText = '🛰 Satellite';
+                            } else {
+                              map.eachLayer(l => { if (!(l instanceof window.L.Marker)) map.removeLayer(l); });
+                              // Google Satellite + Esri labels
+                              window.L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { attribution: '© Google', maxZoom: 20 }).addTo(map);
+                              window.L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { attribution: '', maxZoom: 19, opacity: 0.8 }).addTo(map);
+                              // Re-add marker if coords exist
+                              if (coords) window.L.marker([coords.lat, coords.lng]).addTo(map);
+                              btn.setAttribute('data-mode', 'satellite');
+                              btn.innerText = '🗺 Street';
+                            }
+                          }}
+                          data-mode="satellite"
+                          style={{
+                            position: 'absolute',
+                            bottom: '1.5rem',
+                            right: '1.5rem',
+                            zIndex: 1000,
+                            background: 'rgba(0,0,0,0.75)',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: '8px',
+                            padding: '0.5rem 1rem',
+                            fontSize: '0.85rem',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            backdropFilter: 'blur(6px)',
+                            fontFamily: 'Inter, sans-serif',
+                          }}
+                        >
+                          🗺 Street
+                        </button>
+                      </div>
                   </div>
               </div>
 
@@ -485,10 +567,10 @@ export default function SolarIQ() {
                     {error && `Error: ${error}`}
                     {!error && pinState === 'waiting' && 'Waiting for Location Pin...'}
                     {!error && pinState === 'pinned' && `Location Pinned: ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`}
-                    {!error && pinState === 'pinned' && (activeTab === 'manual' || uploadState === 'ready') && ' — Ready to Generate'}
+                    {!error && pinState === 'pinned' && getEffectiveKwh() > 0 && ' — Ready to Generate'}
                     {!error && status === 'loading' && ' — Generating Models...'}
                   </div>
-                  <a href="#dashboard" className={`btn btn-filled ${((activeTab === 'manual' && manualKwh) || uploadState === 'ready' || uploadState === 'complete') && pinState === 'pinned' ? 'ready' : ''}`} id="generateBtn" onClick={handleGenerate}>
+                  <a href="#dashboard" className={`btn btn-filled ${getEffectiveKwh() > 0 && pinState === 'pinned' ? 'ready' : ''}`} id="generateBtn" onClick={handleGenerate}>
                     {status === 'loading' ? 'Processing...' : (error ? 'Retry Generation \u2192' : 'Generate My Solar Report \u2192')}
                   </a>
               </div>
@@ -510,6 +592,71 @@ export default function SolarIQ() {
                     Recalculate
                 </button>
             </div>
+
+            <div className="tariff-info-card" style={{
+              background: 'rgba(245,166,35,0.08)',
+              border: '1px solid rgba(245,166,35,0.25)',
+              borderRadius: '12px',
+              padding: '1rem 1.5rem',
+              marginBottom: '1.5rem',
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '1.5rem',
+              alignItems: 'center',
+              fontSize: '0.9rem',
+            }}>
+              <div>
+                <span style={{ opacity: 0.6, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>Detected State</span>
+                <div style={{ fontWeight: 700, color: 'var(--amber)' }}>{results.tariff.stateName}</div>
+              </div>
+              <div>
+                <span style={{ opacity: 0.6, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>Effective Rate</span>
+                <div style={{ fontWeight: 700, color: 'var(--amber)' }}>₹{results.tariff.effectiveRate}/kWh</div>
+              </div>
+              <div>
+                <span style={{ opacity: 0.6, fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>Current Monthly Bill</span>
+                <div style={{ fontWeight: 700, color: 'var(--amber)' }}>₹{results.tariff.currentMonthlyBill.toLocaleString('en-IN')}</div>
+              </div>
+              <div style={{ marginLeft: 'auto', fontSize: '0.75rem', opacity: 0.5, maxWidth: '220px', textAlign: 'right' }}>
+                Tariff based on {results.tariff.stateName} SERC slab rates. Actual bill may vary by DISCOM zone.
+              </div>
+            </div>
+
+            <details style={{ marginBottom: '1.5rem', fontSize: '0.85rem', opacity: 0.8 }}>
+              <summary style={{ cursor: 'pointer', color: 'var(--amber)', fontWeight: 600 }}>
+                View tariff slab breakdown for {results.inputData.monthlyKwh} kWh
+              </summary>
+              <table style={{ width: '100%', marginTop: '0.75rem', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ opacity: 0.6, fontSize: '0.75rem', textTransform: 'uppercase' }}>
+                    <th style={{ textAlign: 'left', padding: '0.4rem 0.75rem' }}>Slab</th>
+                    <th style={{ textAlign: 'right', padding: '0.4rem 0.75rem' }}>Units</th>
+                    <th style={{ textAlign: 'right', padding: '0.4rem 0.75rem' }}>Rate (₹/kWh)</th>
+                    <th style={{ textAlign: 'right', padding: '0.4rem 0.75rem' }}>Amount (₹)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.tariff.slabBreakdown.map((row, i) => (
+                    <tr key={i} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <td style={{ padding: '0.4rem 0.75rem' }}>{row.slab}</td>
+                      <td style={{ padding: '0.4rem 0.75rem', textAlign: 'right' }}>{row.units}</td>
+                      <td style={{ padding: '0.4rem 0.75rem', textAlign: 'right' }}>₹{row.rate}</td>
+                      <td style={{ padding: '0.4rem 0.75rem', textAlign: 'right' }}>₹{row.amount}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: '1px solid rgba(255,255,255,0.15)', fontWeight: 700 }}>
+                    <td style={{ padding: '0.4rem 0.75rem' }}>Fixed Charge</td>
+                    <td colSpan={2}></td>
+                    <td style={{ padding: '0.4rem 0.75rem', textAlign: 'right' }}>₹{results.tariff.fixedCharge}</td>
+                  </tr>
+                  <tr style={{ fontWeight: 700, color: 'var(--amber)' }}>
+                    <td style={{ padding: '0.4rem 0.75rem' }}>Total</td>
+                    <td colSpan={2}></td>
+                    <td style={{ padding: '0.4rem 0.75rem', textAlign: 'right' }}>₹{results.tariff.currentMonthlyBill.toLocaleString('en-IN')}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </details>
 
             <div className="report-kpi-grid">
                 <div className="kpi-card">
@@ -587,24 +734,28 @@ export default function SolarIQ() {
                         <div className="env-val text-green">{results.environmental.annualCO2Tons}</div>
                         <div className="env-label">tons/yr</div>
                         <div className="env-sub">Annual CO₂ Offset</div>
+                        <div className="env-context">Same as taking 1 petrol car off the road each year</div>
                     </div>
                     <div className="env-card">
                         <div className="env-icon">🌍</div>
                         <div className="env-val text-green">{results.environmental.lifetimeCO2Tons}</div>
                         <div className="env-label">tons</div>
                         <div className="env-sub">Lifetime CO₂ Offset</div>
+                        <div className="env-context">Weight equivalent to {Math.max(1, Math.round(results.environmental.lifetimeCO2Tons / 6))} African elephants in avoided emissions</div>
                     </div>
                     <div className="env-card">
                         <div className="env-icon">🌳</div>
                         <div className="env-val text-green">{results.environmental.treesEquivalent.toLocaleString('en-IN')}</div>
                         <div className="env-label">trees</div>
                         <div className="env-sub">Trees Equivalent</div>
+                        <div className="env-context">Planted and grown over the 25-year system life</div>
                     </div>
                     <div className="env-card">
                         <div className="env-icon">🚗</div>
                         <div className="env-val text-green">{results.environmental.carsOffset}</div>
                         <div className="env-label">cars/yr</div>
                         <div className="env-sub">Cars Off Road</div>
+                        <div className="env-context">Based on avg Indian car emitting 4.6 tons CO₂/year</div>
                     </div>
                 </div>
             </div>
@@ -617,17 +768,17 @@ export default function SolarIQ() {
                 <div className="comp-grid">
                     <div className="comp-card">
                         <div className="comp-label">WITHOUT SOLAR</div>
-                        <div className="comp-val text-red">₹{(results.inputData.monthlyKwh * 8).toLocaleString('en-IN')}</div>
+                        <div className="comp-val text-red">₹{results.tariff.currentMonthlyBill.toLocaleString('en-IN')}</div>
                         <div className="comp-sub">per month</div>
                         
                         <div className="comp-bottom">
-                            <div>Annual bill: <strong>₹{(results.inputData.monthlyKwh * 8 * 12).toLocaleString('en-IN')}</strong></div>
-                            <div className="text-red">25-year total: <strong>₹{(results.inputData.monthlyKwh * 8 * 12 * 25).toLocaleString('en-IN')}</strong></div>
+                            <div>Annual bill: <strong>₹{(results.tariff.currentMonthlyBill * 12).toLocaleString('en-IN')}</strong></div>
+                            <div className="text-red">25-year total: <strong>₹{(results.tariff.currentMonthlyBill * 12 * 25).toLocaleString('en-IN')}</strong></div>
                         </div>
                     </div>
                     <div className="comp-card">
                         <div className="comp-label text-green">WITH SOLAR <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--amber)" stroke="none"><circle cx="12" cy="12" r="10"></circle></svg></div>
-                        <div className="comp-val text-green">₹{Math.max(0, (results.inputData.monthlyKwh * 8) - results.financials.monthlySavings).toLocaleString('en-IN')}</div>
+                        <div className="comp-val text-green">₹{Math.max(0, results.tariff.currentMonthlyBill - results.financials.monthlySavings).toLocaleString('en-IN')}</div>
                         <div className="comp-sub">per month (est.)</div>
                         
                         <div className="comp-bottom">
@@ -643,19 +794,19 @@ export default function SolarIQ() {
                     <div className="adv-icon">🤖</div>
                     <div>
                         <strong>AI Solar Advisor</strong>
-                        <div style={{fontSize:'0.8rem', opacity:0.6}}>SolarMind Intelligence • Phase 6</div>
+                        <div style={{fontSize:'0.8rem', opacity:0.6}}>SolarMind Intelligence</div>
                     </div>
                 </div>
                 <div className="advisor-body">
                     <p>Based on your <strong>{results.inputData.monthlyKwh} kWh/month</strong> usage in <strong className="text-amber">{searchQuery || "your area"}</strong>, a <span className="text-amber">{results.sizing.systemSizeKW} kW</span> solar system with <strong>{results.sizing.panelCount} panels</strong> will cover <strong>{results.sizing.coveragePercent}%</strong> of your energy needs.</p>
                     <p>With the MNRE 40% residential subsidy, your net investment is <span className="text-amber">₹{results.financials.installCost.toLocaleString('en-IN')}</span>, which you'll recover in just <span className="text-amber">{results.financials.paybackYears} years</span>. Over 25 years, you'll earn a net return of <strong className="text-green">₹{results.financials.lifetimeSavings.toLocaleString('en-IN')}</strong>.</p>
-                    <p>💡 <strong>Next Steps:</strong> Apply for PM Surya Ghar subsidy on pmsuryaghar.gov.in, contact MNRE-approved installers, and consult your DISCOM for net metering registration.</p>
+                    <p>💡 <strong>Next Steps:</strong> Contact an MNRE-approved installer for a site survey, apply for the 40% PM Surya Ghar residential subsidy, and register for net metering with your local DISCOM.</p>
                 </div>
-                <div className="advisor-footer">ⓘ AI-enhanced recommendations powered by Google Gemini will be available in Phase 6.</div>
+                <div className="advisor-footer">ⓘ Recommendations are based on NASA POWER climate data, MNRE subsidy guidelines, and standard solar engineering constants.</div>
             </div>
             
             <div style={{textAlign: 'center', marginTop: '3rem'}}>
-              <a href="#" className="btn btn-filled" onClick={handleDownloadPDF} style={{padding: '1.2rem 3rem', fontSize: '1.1rem', borderRadius: '40px', background: 'var(--amber)', color: '#111', fontWeight: 600, textDecoration: 'none', display: 'inline-block'}}>Download Full PDF Report</a>
+              <a href="#" data-pdf-hide className="btn btn-filled" onClick={handleDownloadPDF} style={{padding: '1.2rem 3rem', fontSize: '1.1rem', borderRadius: '40px', background: 'var(--amber)', color: '#111', fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.75rem', transition: 'all 0.3s ease', cursor: 'pointer'}}>Download Full PDF Report</a>
             </div>
         </section>
       )}
@@ -663,7 +814,7 @@ export default function SolarIQ() {
       <footer style={{borderTop: '1px solid var(--glass-border)', marginTop: '2rem'}}>
           <div className="logo">Solar<strong>Mind</strong></div>
           <p>Solar clarity for every Indian homeowner.</p>
-          <div style={{opacity: 0.3, fontSize: '0.8rem'}}>Prototype developed for feasibility demonstration. Not real data.</div>
+          <div style={{opacity: 0.3, fontSize: '0.8rem'}}>Calculations are based on NASA POWER climate data and standard solar engineering formulas.</div>
       </footer>
     </div>
   );
